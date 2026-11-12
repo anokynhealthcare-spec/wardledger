@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Patient, ChargeEntry, InvoiceRecord } from '../types.js';
 import { formatCurrency, formatDate, getCategoryIcon } from '../utils.js';
+import { familyChatLocally } from '../lib/firebaseStore.js';
 import {
   HeartHandshake,
   MessageSquare,
@@ -80,16 +81,26 @@ export const FamilyView: React.FC<FamilyViewProps> = ({
     setIsAsking(true);
 
     try {
-      const res = await fetch('/api/family-chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          patientId: patient.id,
-          question: q,
-          language: chatLanguage,
-        }),
-      });
-      const data = await res.json();
+      let data: { answer: string; groundedInCharges?: string[] } = { answer: '' };
+      try {
+        const res = await fetch('/api/family-chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            patientId: patient.id,
+            question: q,
+            language: chatLanguage,
+          }),
+        });
+        if (res.ok) {
+          data = await res.json();
+        } else {
+          throw new Error('API route unavailable');
+        }
+      } catch {
+        // Fallback to local grounded chat
+        data = familyChatLocally(patient, charges, q, chatLanguage);
+      }
 
       const aiMsg: ChatMessage = {
         id: `ai-${Date.now()}`,

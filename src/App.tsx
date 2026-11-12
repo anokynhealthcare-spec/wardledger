@@ -37,6 +37,7 @@ import {
   getFirestoreActivityLog,
   getFirestorePriceList,
   addFirestoreActivityLog,
+  compileInvoiceLocally,
 } from './lib/firebaseStore.js';
 
 export default function App() {
@@ -269,20 +270,50 @@ export default function App() {
   const handleTriggerCompile = async (patientId: string, eventType?: DischargeEventType) => {
     setIsCompiling(true);
     try {
-      const res = await fetch(`/api/patients/${patientId}/compile-invoice`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ eventType }),
-      });
-      const data = await res.json();
-      if (data.compiledData) {
-        setCompiledInvoiceData(data.compiledData);
-        setCurrentInvoice(data.invoice);
+      const targetPatient = currentPatient || patients.find((p) => p.id === patientId);
+      if (!targetPatient) return;
+      const effectiveEventType = eventType || targetPatient.dischargeEvent?.type || 'Planned Discharge';
 
-        if (isFirebaseConnected && data.invoice) {
-          await saveFirestoreInvoice(data.invoice);
+      let compiledData: CompiledInvoiceData | null = null;
+      let invoice: InvoiceRecord | null = null;
+
+      try {
+        const res = await fetch(`/api/patients/${patientId}/compile-invoice`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ eventType: effectiveEventType }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          compiledData = data.compiledData;
+          invoice = data.invoice;
+        } else {
+          throw new Error('API unavailable');
         }
+      } catch {
+        // Fallback to client-side compilation
+        compiledData = compileInvoiceLocally(
+          targetPatient,
+          charges,
+          targetPatient.advanceDeposit,
+          effectiveEventType
+        );
+        const invoiceNumber = `WL-INV-${Math.floor(1000 + Math.random() * 9000)}`;
+        invoice = {
+          id: invoiceNumber,
+          invoiceNumber,
+          patientId: targetPatient.id,
+          compiledData,
+          status: 'Draft',
+          paymentLink: `/pay/${invoiceNumber}`,
+          createdAt: new Date().toISOString(),
+        };
+      }
 
+      if (compiledData && invoice) {
+        setCompiledInvoiceData(compiledData);
+        setCurrentInvoice(invoice);
+        await saveFirestoreInvoice(invoice);
         setIsReviewModalOpen(true);
         await fetchPatientDetails(patientId);
         await fetchPatients();

@@ -42,16 +42,35 @@ export const ShareInvoiceModal: React.FC<ShareInvoiceModalProps> = ({
   }, [invoice, isOpen, language]);
 
   const loadShareMessage = async (lang: string) => {
-    if (!invoice) return;
+    if (!invoice || !patient) return;
     setIsLoadingMessage(true);
     try {
-      const res = await fetch(`/api/invoices/${invoice.invoiceNumber}/share-message`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ language: lang }),
-      });
-      const data = await res.json();
-      setShareText(data);
+      const totalDue = invoice.compiledData.totalDue;
+      const invNum = invoice.invoiceNumber;
+      const isSudden = patient.dischargeEvent?.type === 'Sudden Exit';
+      const fullUrl = `${window.location.origin}${invoice.paymentLink}`;
+
+      let subject = `WardLedger Statement #${invNum} - ${patient.name}`;
+      let message = `Dear Family,\n\nInpatient care statement for ${patient.name} (${patient.bedNumber}) under ${patient.consultant} is ready. Total balance due: $${totalDue.toFixed(2)} (after advance deposit credit).\n\nSecure PayPal payment link:\n${fullUrl}\n\nThank you for choosing WardLedger.`;
+
+      if (isSudden) {
+        subject = `Inpatient Care Summary - ${patient.name}`;
+        message = `Dear Family,\n\nWe extend our deepest condolences on the passing of ${patient.name}. Automated billing reminders are paused. This statement reflects inpatient care under ${patient.consultant}.\n\nFamily Liaison Contact: +1 (800) 555-0199.`;
+      } else if (lang === 'Tamil') {
+        subject = `மருத்துவமனை கட்டண அறிக்கை - ${patient.name}`;
+        message = `அன்புள்ள குடும்பத்தினருக்கு,\n\n${patient.name} (${patient.bedNumber}) அவர்களின் மருத்துவ கட்டண அறிக்கை தயார். செலுத்த வேண்டிய தொகை: $${totalDue.toFixed(2)}.\n\nபாதுகாப்பான PayPal கட்டண இணைப்பு:\n${fullUrl}\n\nநன்றி.`;
+      } else if (lang === 'Hindi') {
+        subject = `अस्पताल बिल विवरण - ${patient.name}`;
+        message = `प्रिय परिवार,\n\n${patient.name} (${patient.bedNumber}) का अस्पताल बिल तैयार है। शेष देय राशि: $${totalDue.toFixed(2)}।\n\nसुरक्षित PayPal भुगतान लिंक:\n${fullUrl}\n\nधन्यवाद।`;
+      } else if (lang === 'Telugu') {
+        subject = `హాస్పిటల్ బిల్లు వివరాలు - ${patient.name}`;
+        message = `प्रिय కుటుంబ సభ్యులకు,\n\n${patient.name} (${patient.bedNumber}) యొక్క హాస్పిటల్ బిల్లు సిద్ధంగా ఉంది. చెల్లించవలసిన మొత్తం: $${totalDue.toFixed(2)}.\n\nసురక్షిత PayPal చెల్లింపు లింక్:\n${fullUrl}\n\nధన్యవాదాలు.`;
+      } else if (lang === 'Malayalam') {
+        subject = `ആശുപത്രി ബിൽ വിവരങ്ങൾ - ${patient.name}`;
+        message = `പ്രിയ കുടുംബാംഗങ്ങൾക്ക്,\n\n${patient.name} (${patient.bedNumber})-ൻ്റെ ആശുപത്രി ബിൽ തയ്യാറാണ്. അടയ്ക്കേണ്ട തുക: $${totalDue.toFixed(2)}.\n\nസുരക്ഷിതമായ PayPal പേയ്മെൻ്റ് ലിങ്ക്:\n${fullUrl}\n\nനന്ദി.`;
+      }
+
+      setShareText({ subject, message });
     } catch (err) {
       console.error('Failed to load share message', err);
     } finally {
