@@ -1,0 +1,7 @@
+{
+  "name": "WardLedger",
+  "description": "Live inpatient billing that turns ward activity into one clear invoice, and clears discharge when it's paid.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
