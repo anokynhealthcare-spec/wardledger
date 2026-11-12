@@ -1,17 +1,22 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import 'dotenv/config';
 import { createServer as createViteServer } from 'vite';
 import { apiRouter } from './server/routes.js';
+import { hasValidGeminiKey } from './server/geminiService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-import { hasValidGeminiKey } from './server/geminiService.js';
+export const app = express();
 
 async function startServer() {
-  const app = express();
   const port = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
   // Request JSON parsing
@@ -30,7 +35,7 @@ async function startServer() {
     });
   });
 
-  const isProduction = process.env.NODE_ENV === 'production';
+  const isProduction = process.env.NODE_ENV === 'production' || process.env.VERCEL;
 
   if (!isProduction) {
     // In dev mode, attach Vite middleware for HMR-less fast reload
@@ -54,12 +59,18 @@ async function startServer() {
     });
   }
 
-  app.listen(port, '0.0.0.0', () => {
-    console.log(`WardLedger server running on http://0.0.0.0:${port} [${isProduction ? 'production' : 'development'}]`);
+  if (!process.env.VERCEL) {
+    app.listen(port, '0.0.0.0', () => {
+      console.log(`WardLedger server running on http://0.0.0.0:${port} [${isProduction ? 'production' : 'development'}]`);
+    });
+  }
+}
+
+if (!process.env.VERCEL) {
+  startServer().catch((err) => {
+    console.error('Failed to start WardLedger server:', err);
+    process.exit(1);
   });
 }
 
-startServer().catch((err) => {
-  console.error('Failed to start WardLedger server:', err);
-  process.exit(1);
-});
+export default app;

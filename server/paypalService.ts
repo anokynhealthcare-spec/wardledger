@@ -1,7 +1,16 @@
 /**
  * PayPal Sandbox REST API Checkout Service
  * Uses PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET from server environment variables.
+ * Missing credentials return an explicit error without simulated payment success.
  */
+
+import { initializeApp } from 'firebase/app';
+import { getFirestore, doc, getDoc, setDoc } from 'firebase/firestore';
+import firebaseConfig from '../firebase-applet-config.json';
+
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app, firebaseConfig.firestoreDatabaseId || '(default)');
+const ORDERS_COL = 'paypalOrders';
 
 export interface PayPalOrderResponse {
   orderId: string;
@@ -17,16 +26,12 @@ export interface PayPalCaptureResponse {
   currency: string;
 }
 
-// In-memory mapping of PayPal Order ID -> Invoice Number for server verification
-const orderToInvoiceMap = new Map<string, string>();
-
 async function getPayPalAccessToken(): Promise<string> {
   const clientId = process.env.PAYPAL_CLIENT_ID;
   const clientSecret = process.env.PAYPAL_CLIENT_SECRET;
 
   if (!clientId || !clientSecret) {
-    console.warn('PayPal credentials (PAYPAL_CLIENT_ID / PAYPAL_CLIENT_SECRET) not set in environment. Running in sandbox simulation mode.');
-    return '';
+    throw new Error('PayPal credentials (PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET) are missing. Explicit error returned without simulated payment success.');
   }
 
   const auth = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
@@ -49,30 +54,32 @@ async function getPayPalAccessToken(): Promise<string> {
 }
 
 export const paypalService = {
-  mapOrderToInvoice(orderId: string, invoiceNumber: string) {
-    orderToInvoiceMap.set(orderId, invoiceNumber);
+  async mapOrderToInvoice(orderId: string, invoiceNumber: string): Promise<void> {
+    try {
+      await setDoc(doc(db, ORDERS_COL, orderId), {
+        orderId,
+        invoiceNumber,
+        createdAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.error('Failed to map order to invoice in Firestore:', err);
+    }
   },
 
-  getInvoiceForOrder(orderId: string): string | undefined {
-    return orderToInvoiceMap.get(orderId);
+  async getInvoiceForOrder(orderId: string): Promise<string | undefined> {
+    try {
+      const snap = await getDoc(doc(db, ORDERS_COL, orderId));
+      if (snap.exists()) {
+        return snap.data()?.invoiceNumber;
+      }
+    } catch (err) {
+      console.error('Failed to fetch invoice for order from Firestore:', err);
+    }
+    return undefined;
   },
 
-  /**
-   * Creates a PayPal sandbox order using the approved invoice amount loaded from Firestore/store.
-   */
   async createOrder(invoiceNumber: string, amount: number, currency = 'USD'): Promise<PayPalOrderResponse> {
     const accessToken = await getPayPalAccessToken();
-
-    if (!accessToken) {
-      // Sandbox simulation fallback when credentials are not configured
-      const orderId = `PAYPAL-ORD-${Date.now().toString(36).toUpperCase()}-${Math.floor(1000 + Math.random() * 9000)}`;
-      orderToInvoiceMap.set(orderId, invoiceNumber);
-      return {
-        orderId,
-        approvalUrl: `/pay/sandbox-approve?orderId=${orderId}&invoiceNumber=${invoiceNumber}`,
-        amount,
-      };
-    }
 
     const response = await fetch('https://api-m.sandbox.paypal.com/v2/checkout/orders', {
       method: 'POST',
@@ -108,7 +115,7 @@ export const paypalService = {
     const orderId = data.id;
     const approvalLink = data.links?.find((l: any) => l.rel === 'approve');
 
-    orderToInvoiceMap.set(orderId, invoiceNumber);
+    await this.mapOrderToInvoice(orderId, invoiceNumber);
 
     return {
       orderId,
@@ -117,23 +124,8 @@ export const paypalService = {
     };
   },
 
-  /**
-   * Captures the order after buyer approval and verifies completed capture, currency, and amount.
-   */
   async captureOrder(orderId: string): Promise<PayPalCaptureResponse> {
     const accessToken = await getPayPalAccessToken();
-
-    if (!accessToken || orderId.startsWith('PAYPAL-ORD-')) {
-      // Sandbox simulation fallback capture
-      const captureId = `PP-CAP-${Date.now()}-${Math.floor(100000 + Math.random() * 900000)}`;
-      return {
-        success: true,
-        captureId,
-        status: 'COMPLETED',
-        amount: '0.00',
-        currency: 'USD',
-      };
-    }
 
     const response = await fetch(`https://api-m.sandbox.paypal.com/v2/checkout/orders/${orderId}/capture`, {
       method: 'POST',

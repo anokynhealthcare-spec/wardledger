@@ -285,7 +285,7 @@ apiRouter.post('/paypal/capture', async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'orderId and invoiceNumber are required' });
   }
 
-  const mappedInvoice = paypalService.getInvoiceForOrder(orderId);
+  const mappedInvoice = await paypalService.getInvoiceForOrder(orderId);
   if (mappedInvoice && mappedInvoice !== invoiceNumber) {
     return res.status(400).json({ error: 'Order ID does not match invoice number' });
   }
