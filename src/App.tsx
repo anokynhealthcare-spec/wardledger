@@ -20,7 +20,24 @@ import { PayModal } from './components/PayModal.js';
 import { ActivityLogModal } from './components/ActivityLogModal.js';
 import { PriceListModal } from './components/PriceListModal.js';
 import { ClearanceCard } from './components/ClearanceCard.js';
-import { Shield, Sparkles, Building2 } from 'lucide-react';
+import { Shield, Sparkles, Database, CheckCircle2 } from 'lucide-react';
+import {
+  validateFirestoreConnection,
+  seedFirestoreIfEmpty,
+  getFirestorePatients,
+  getFirestorePatient,
+  getFirestoreCharges,
+  addFirestoreCharge,
+  voidFirestoreCharge,
+  markFirestorePatientEvent,
+  saveFirestoreInvoice,
+  getFirestoreInvoice,
+  approveFirestoreInvoice,
+  markFirestoreInvoicePaid,
+  getFirestoreActivityLog,
+  getFirestorePriceList,
+  addFirestoreActivityLog,
+} from './lib/firebaseStore.js';
 
 export default function App() {
   const [role, setRole] = useState<AppRole>('NURSE');
@@ -31,6 +48,7 @@ export default function App() {
   const [currentInvoice, setCurrentInvoice] = useState<InvoiceRecord | null>(null);
   const [priceList, setPriceList] = useState<PriceListItem[]>([]);
   const [activityLogs, setActivityLogs] = useState<ActivityLogEntry[]>([]);
+  const [isFirebaseConnected, setIsFirebaseConnected] = useState<boolean>(false);
 
   // Navigation: 'BOARD' | 'LEDGER'
   const [view, setView] = useState<'BOARD' | 'LEDGER'>('BOARD');
@@ -47,11 +65,24 @@ export default function App() {
   const [isActivityLogOpen, setIsActivityLogOpen] = useState(false);
   const [isPriceListOpen, setIsPriceListOpen] = useState(false);
 
-  // Load initial patients & price list
+  // Initialize Firebase and load data
   useEffect(() => {
-    fetchPatients();
-    fetchPriceList();
-    fetchActivityLog();
+    async function initFirebaseAndLoad() {
+      try {
+        const connected = await validateFirestoreConnection();
+        setIsFirebaseConnected(connected);
+        if (connected) {
+          await seedFirestoreIfEmpty();
+        }
+      } catch (e) {
+        console.warn('Firebase initialization notice:', e);
+      } finally {
+        await fetchPatients();
+        await fetchPriceList();
+        await fetchActivityLog();
+      }
+    }
+    initFirebaseAndLoad();
   }, []);
 
   // Fetch single patient whenever selectedPatientId changes
@@ -63,6 +94,15 @@ export default function App() {
 
   const fetchPatients = async () => {
     try {
+      if (isFirebaseConnected) {
+        const pList = await getFirestorePatients();
+        setPatients(pList);
+        if (!selectedPatientId && pList.length > 0) {
+          setSelectedPatientId(pList[0].id);
+        }
+        return;
+      }
+
       const res = await fetch('/api/patients');
       const data = await res.json();
       setPatients(data.patients || []);
@@ -76,6 +116,19 @@ export default function App() {
 
   const fetchPatientDetails = async (id: string) => {
     try {
+      if (isFirebaseConnected) {
+        const p = await getFirestorePatient(id);
+        const c = await getFirestoreCharges(id);
+        let inv = null;
+        if (p?.currentInvoiceId) {
+          inv = await getFirestoreInvoice(p.currentInvoiceId);
+        }
+        setCurrentPatient(p);
+        setCharges(c);
+        setCurrentInvoice(inv);
+        return;
+      }
+
       const res = await fetch(`/api/patients/${id}`);
       const data = await res.json();
       setCurrentPatient(data.patient || null);
@@ -88,6 +141,12 @@ export default function App() {
 
   const fetchPriceList = async () => {
     try {
+      if (isFirebaseConnected) {
+        const list = await getFirestorePriceList();
+        setPriceList(list);
+        return;
+      }
+
       const res = await fetch('/api/price-list');
       const data = await res.json();
       setPriceList(data.priceList || []);
@@ -98,6 +157,12 @@ export default function App() {
 
   const fetchActivityLog = async () => {
     try {
+      if (isFirebaseConnected) {
+        const logs = await getFirestoreActivityLog();
+        setActivityLogs(logs);
+        return;
+      }
+
       const res = await fetch('/api/activity-log');
       const data = await res.json();
       setActivityLogs(data.logs || []);
@@ -116,6 +181,18 @@ export default function App() {
   }) => {
     if (!selectedPatientId) return;
     try {
+      if (isFirebaseConnected) {
+        await addFirestoreCharge({
+          ...chargeData,
+          patientId: selectedPatientId,
+          timestamp: new Date().toISOString(),
+        });
+        await fetchPatientDetails(selectedPatientId);
+        await fetchPatients();
+        await fetchActivityLog();
+        return;
+      }
+
       const res = await fetch(`/api/patients/${selectedPatientId}/charges`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -134,6 +211,14 @@ export default function App() {
   // Void Charge
   const handleVoidCharge = async (chargeId: string, reason: string, voidedBy: string) => {
     try {
+      if (isFirebaseConnected && selectedPatientId) {
+        await voidFirestoreCharge(selectedPatientId, chargeId, reason, voidedBy);
+        await fetchPatientDetails(selectedPatientId);
+        await fetchPatients();
+        await fetchActivityLog();
+        return;
+      }
+
       const res = await fetch(`/api/charges/${chargeId}/void`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -155,6 +240,15 @@ export default function App() {
   const handleMarkEvent = async (type: DischargeEventType, notes?: string) => {
     if (!selectedPatientId) return;
     try {
+      if (isFirebaseConnected) {
+        await markFirestorePatientEvent(selectedPatientId, type, notes);
+        await fetchPatientDetails(selectedPatientId);
+        await fetchPatients();
+        await fetchActivityLog();
+        handleTriggerCompile(selectedPatientId, type);
+        return;
+      }
+
       const res = await fetch(`/api/patients/${selectedPatientId}/event`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -164,8 +258,6 @@ export default function App() {
         await fetchPatientDetails(selectedPatientId);
         await fetchPatients();
         await fetchActivityLog();
-
-        // Promptly trigger compile invoice after discharge event
         handleTriggerCompile(selectedPatientId, type);
       }
     } catch (err) {
@@ -186,6 +278,11 @@ export default function App() {
       if (data.compiledData) {
         setCompiledInvoiceData(data.compiledData);
         setCurrentInvoice(data.invoice);
+
+        if (isFirebaseConnected && data.invoice) {
+          await saveFirestoreInvoice(data.invoice);
+        }
+
         setIsReviewModalOpen(true);
         await fetchPatientDetails(patientId);
         await fetchPatients();
@@ -206,6 +303,23 @@ export default function App() {
     if (!currentInvoice) return;
     setIsApproving(true);
     try {
+      if (isFirebaseConnected) {
+        await approveFirestoreInvoice(
+          currentInvoice.invoiceNumber,
+          updatedData,
+          familyLanguage,
+          'Billing Desk Officer'
+        );
+        setIsReviewModalOpen(false);
+        if (selectedPatientId) {
+          await fetchPatientDetails(selectedPatientId);
+        }
+        await fetchPatients();
+        await fetchActivityLog();
+        setIsShareModalOpen(true);
+        return;
+      }
+
       const res = await fetch('/api/invoices', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -216,7 +330,6 @@ export default function App() {
           actor: 'Billing Desk Officer',
         }),
       });
-      const data = await res.json();
       if (res.ok) {
         setIsReviewModalOpen(false);
         if (selectedPatientId) {
@@ -236,6 +349,23 @@ export default function App() {
   // Simulate Payment
   const handlePaymentSuccess = async (invoiceNumber: string, payerName: string) => {
     try {
+      const paymentRef = `PAYPAL-REF-${Math.floor(100000 + Math.random() * 900000)}`;
+      if (isFirebaseConnected) {
+        await markFirestoreInvoicePaid(
+          invoiceNumber,
+          paymentRef,
+          'PayPal (USD Direct)',
+          payerName || 'Family Member'
+        );
+        if (selectedPatientId) {
+          await fetchPatientDetails(selectedPatientId);
+        }
+        await fetchPatients();
+        await fetchActivityLog();
+        setIsShareModalOpen(false);
+        return;
+      }
+
       const res = await fetch(`/api/invoices/${invoiceNumber}/mock-pay`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -258,6 +388,18 @@ export default function App() {
   const handleNotifyWard = async () => {
     if (!currentInvoice) return;
     try {
+      if (isFirebaseConnected) {
+        await addFirestoreActivityLog({
+          action: 'WARD_NOTIFIED',
+          actor: 'Discharge Liaison',
+          patientId: currentInvoice.patientId,
+          patientName: currentInvoice.compiledData.patientName,
+          details: `Notified Ward (${currentPatient?.bedNumber || ''}): Financial clearance confirmed in Firestore. Ready for gate pass.`,
+        });
+        await fetchActivityLog();
+        return;
+      }
+
       await fetch(`/api/invoices/${currentInvoice.invoiceNumber}/notify-ward`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -278,13 +420,7 @@ export default function App() {
       {/* Top Header */}
       <Header
         currentRole={role}
-        onRoleChange={(newRole) => {
-          setRole(newRole);
-          // If switching to billing or family, ensure we have context
-          if (newRole === 'BILLING' && currentPatient?.currentInvoiceId) {
-            // Can open review
-          }
-        }}
+        onRoleChange={(newRole) => setRole(newRole)}
         patients={patients}
         selectedPatientId={selectedPatientId}
         onSelectPatient={(id) => {
@@ -300,8 +436,8 @@ export default function App() {
 
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
-        {/* Role Helper Banner */}
-        <div className="flex items-center justify-between text-xs px-1">
+        {/* Role & Connection Indicator Banner */}
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 text-xs px-1">
           <div className="flex items-center gap-2 text-slate-500">
             <span className="font-semibold text-slate-700">Active View:</span>
             <span className="bg-white border border-slate-200 px-2.5 py-1 rounded-lg text-slate-800 font-medium">
@@ -311,31 +447,43 @@ export default function App() {
             </span>
           </div>
 
-          {role === 'NURSE' && (
-            <div className="flex items-center gap-1.5">
-              <button
-                onClick={() => setView('BOARD')}
-                className={`px-3 py-1.5 rounded-lg font-semibold transition-all ${
-                  view === 'BOARD'
-                    ? 'bg-[#0070BA] text-white shadow-xs'
-                    : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
-                }`}
-              >
-                Ward Board (All Beds)
-              </button>
-              <button
-                onClick={() => setView('LEDGER')}
-                disabled={!selectedPatientId}
-                className={`px-3 py-1.5 rounded-lg font-semibold transition-all ${
-                  view === 'LEDGER'
-                    ? 'bg-[#0070BA] text-white shadow-xs'
-                    : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
-                }`}
-              >
-                Patient Ledger {currentPatient ? `(${currentPatient.bedNumber})` : ''}
-              </button>
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5 bg-amber-50 text-amber-800 border border-amber-200 px-2.5 py-1 rounded-lg font-semibold">
+              <Database className="w-3.5 h-3.5 text-amber-600" />
+              <span>
+                {isFirebaseConnected
+                  ? 'Firebase Firestore Backend Connected'
+                  : 'Local Hospital Store'}
+              </span>
+              <CheckCircle2 className="w-3 h-3 text-emerald-600" />
             </div>
-          )}
+
+            {role === 'NURSE' && (
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={() => setView('BOARD')}
+                  className={`px-3 py-1.5 rounded-lg font-semibold transition-all ${
+                    view === 'BOARD'
+                      ? 'bg-[#0070BA] text-white shadow-xs'
+                      : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
+                  }`}
+                >
+                  Ward Board (All Beds)
+                </button>
+                <button
+                  onClick={() => setView('LEDGER')}
+                  disabled={!selectedPatientId}
+                  className={`px-3 py-1.5 rounded-lg font-semibold transition-all ${
+                    view === 'LEDGER'
+                      ? 'bg-[#0070BA] text-white shadow-xs'
+                      : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
+                  }`}
+                >
+                  Patient Ledger {currentPatient ? `(${currentPatient.bedNumber})` : ''}
+                </button>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Clearance Card Banner if patient is Financially Cleared */}
@@ -483,7 +631,7 @@ export default function App() {
             </p>
           </div>
           <div className="text-[11px] text-slate-400">
-            Gemini 3.8 Flash • PayPal Sandbox Ready • Fictional Demo Data
+            Firebase Firestore • Vercel Ready • Gemini 3.8 Flash • Fictional Demo Data
           </div>
         </div>
       </footer>

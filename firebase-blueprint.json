@@ -1,0 +1,150 @@
+{
+  "entities": {
+    "Patient": {
+      "title": "Patient",
+      "description": "Inpatient record monitored on ward board",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string", "maxLength": 100 },
+        "mrn": { "type": "string", "maxLength": 30 },
+        "age": { "type": "number" },
+        "gender": { "type": "string", "enum": ["M", "F", "Other"] },
+        "bedNumber": { "type": "string", "maxLength": 20 },
+        "ward": { "type": "string", "maxLength": 100 },
+        "admitDate": { "type": "string" },
+        "consultant": { "type": "string", "maxLength": 100 },
+        "diagnosis": { "type": "string", "maxLength": 300 },
+        "advanceDeposit": { "type": "number" },
+        "status": {
+          "type": "string",
+          "enum": [
+            "Admitted",
+            "Discharge Initiated",
+            "Invoice Ready",
+            "Awaiting Payment",
+            "Financially Cleared"
+          ]
+        },
+        "dischargeEvent": { "type": "object" },
+        "currentInvoiceId": { "type": "string" }
+      },
+      "required": ["id", "name", "mrn", "bedNumber", "ward", "admitDate", "advanceDeposit", "status"]
+    },
+    "ChargeEntry": {
+      "title": "ChargeEntry",
+      "description": "Individual live ward charge logged for patient",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "patientId": { "type": "string" },
+        "category": {
+          "type": "string",
+          "enum": [
+            "Room",
+            "Consultation",
+            "Procedure",
+            "Medication",
+            "Disposable/Consumable",
+            "Investigation",
+            "Other"
+          ]
+        },
+        "description": { "type": "string", "maxLength": 200 },
+        "quantity": { "type": "number" },
+        "unitPrice": { "type": "number" },
+        "total": { "type": "number" },
+        "timestamp": { "type": "string" },
+        "loggedBy": { "type": "string", "maxLength": 100 },
+        "isVoided": { "type": "boolean" },
+        "voidReason": { "type": "string", "maxLength": 300 },
+        "voidedAt": { "type": "string" },
+        "voidedBy": { "type": "string", "maxLength": 100 }
+      },
+      "required": ["id", "patientId", "category", "description", "quantity", "unitPrice", "total", "timestamp", "loggedBy"]
+    },
+    "Invoice": {
+      "title": "Invoice",
+      "description": "Compiled billing statement and payment state",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "invoiceNumber": { "type": "string", "maxLength": 50 },
+        "patientId": { "type": "string" },
+        "compiledData": { "type": "object" },
+        "status": { "type": "string", "enum": ["Draft", "Sent", "Paid"] },
+        "paymentLink": { "type": "string", "maxLength": 200 },
+        "createdAt": { "type": "string" },
+        "paidAt": { "type": "string" },
+        "paymentReference": { "type": "string", "maxLength": 100 },
+        "paymentMethod": { "type": "string", "maxLength": 100 },
+        "familyMessageLang": { "type": "string", "maxLength": 50 }
+      },
+      "required": ["id", "invoiceNumber", "patientId", "status", "paymentLink", "createdAt"]
+    },
+    "ActivityLog": {
+      "title": "ActivityLog",
+      "description": "Audit log entry for clinical billing events",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "patientId": { "type": "string" },
+        "patientName": { "type": "string", "maxLength": 100 },
+        "action": {
+          "type": "string",
+          "enum": [
+            "CHARGE_ADDED",
+            "CHARGE_EDITED",
+            "CHARGE_VOIDED",
+            "EVENT_MARKED",
+            "INVOICE_COMPILED",
+            "INVOICE_APPROVED",
+            "INVOICE_SENT",
+            "PAYMENT_RECEIVED",
+            "WARD_NOTIFIED",
+            "FAMILY_INQUIRY"
+          ]
+        },
+        "actor": { "type": "string", "maxLength": 100 },
+        "details": { "type": "string", "maxLength": 500 }
+      },
+      "required": ["id", "timestamp", "action", "actor", "details"]
+    },
+    "PriceItem": {
+      "title": "PriceItem",
+      "description": "Standard hospital price catalogue item",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "category": { "type": "string" },
+        "name": { "type": "string", "maxLength": 150 },
+        "unitPrice": { "type": "number" },
+        "description": { "type": "string", "maxLength": 300 }
+      },
+      "required": ["id", "category", "name", "unitPrice"]
+    }
+  },
+  "firestore": {
+    "/patients/{patientId}": {
+      "schema": { "$ref": "#/entities/Patient" },
+      "description": "Patient records"
+    },
+    "/patients/{patientId}/charges/{chargeId}": {
+      "schema": { "$ref": "#/entities/ChargeEntry" },
+      "description": "Bedside live charges per patient"
+    },
+    "/invoices/{invoiceId}": {
+      "schema": { "$ref": "#/entities/Invoice" },
+      "description": "Compiled billing statements"
+    },
+    "/activityLogs/{logId}": {
+      "schema": { "$ref": "#/entities/ActivityLog" },
+      "description": "Clinical audit trail entries"
+    },
+    "/priceList/{priceId}": {
+      "schema": { "$ref": "#/entities/PriceItem" },
+      "description": "Hospital price master catalog"
+    }
+  }
+}

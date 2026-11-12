@@ -1,0 +1,78 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Default deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Patient collection
+    match /patients/{patientId} {
+      allow read: if isValidId(patientId);
+      allow create: if isValidId(patientId)
+        && incoming().name is string && incoming().name.size() <= 100
+        && incoming().mrn is string && incoming().mrn.size() <= 30
+        && incoming().bedNumber is string && incoming().bedNumber.size() <= 20
+        && incoming().ward is string && incoming().ward.size() <= 100
+        && incoming().advanceDeposit is number && incoming().advanceDeposit >= 0;
+      allow update: if isValidId(patientId)
+        && (incoming().name is string && incoming().name.size() <= 100)
+        && (incoming().bedNumber is string && incoming().bedNumber.size() <= 20);
+      allow delete: if false;
+
+      // Subcollection: charges
+      match /charges/{chargeId} {
+        allow read: if isValidId(patientId) && isValidId(chargeId);
+        allow create: if isValidId(patientId) && isValidId(chargeId)
+          && incoming().description is string && incoming().description.size() <= 200
+          && incoming().quantity is number && incoming().quantity > 0
+          && incoming().unitPrice is number && incoming().unitPrice >= 0;
+        allow update: if isValidId(patientId) && isValidId(chargeId);
+        allow delete: if false;
+      }
+    }
+
+    // Invoices collection
+    match /invoices/{invoiceId} {
+      allow read: if isValidId(invoiceId);
+      allow create: if isValidId(invoiceId)
+        && incoming().invoiceNumber is string && incoming().invoiceNumber.size() <= 50
+        && incoming().patientId is string;
+      allow update: if isValidId(invoiceId);
+      allow delete: if false;
+    }
+
+    // Activity Log collection
+    match /activityLogs/{logId} {
+      allow read: if isValidId(logId);
+      allow create: if isValidId(logId)
+        && incoming().action is string
+        && incoming().details is string && incoming().details.size() <= 500;
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // Price List collection
+    match /priceList/{priceId} {
+      allow read: if isValidId(priceId);
+      allow create, update: if isValidId(priceId)
+        && incoming().name is string && incoming().name.size() <= 150
+        && incoming().unitPrice is number;
+      allow delete: if false;
+    }
+  }
+}

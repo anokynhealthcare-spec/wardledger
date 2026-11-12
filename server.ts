@@ -8,6 +8,8 @@ import { apiRouter } from './server/routes.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+import { hasValidGeminiKey } from './server/geminiService.js';
+
 async function startServer() {
   const app = express();
   const port = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
@@ -23,7 +25,7 @@ async function startServer() {
     res.json({
       status: 'ok',
       service: 'WardLedger Backend',
-      geminiConfigured: !!process.env.GEMINI_API_KEY,
+      geminiConfigured: hasValidGeminiKey(),
       timestamp: new Date().toISOString(),
     });
   });

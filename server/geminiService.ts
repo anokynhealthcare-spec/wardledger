@@ -9,17 +9,34 @@ import {
   ChargeCategory,
 } from './types.js';
 
-// Initialize the Gemini client on the server side
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY || '',
-  httpOptions: {
-    headers: {
-      'User-Agent': 'aistudio-build',
-    },
-  },
-});
-
 const MODEL_NAME = 'gemini-3.8-flash';
+
+export function hasValidGeminiKey(): boolean {
+  const key = process.env.GEMINI_API_KEY?.trim();
+  if (!key) return false;
+  if (
+    key === 'MY_GEMINI_API_KEY' ||
+    key === 'your_api_key_here' ||
+    key === 'undefined' ||
+    key === 'null' ||
+    key.startsWith('MY_')
+  ) {
+    return false;
+  }
+  return key.length >= 10;
+}
+
+export function getGeminiClient(): GoogleGenAI | null {
+  if (!hasValidGeminiKey()) return null;
+  return new GoogleGenAI({
+    apiKey: process.env.GEMINI_API_KEY!.trim(),
+    httpOptions: {
+      headers: {
+        'User-Agent': 'aistudio-build',
+      },
+    },
+  });
+}
 
 async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   let timer: NodeJS.Timeout;
@@ -210,8 +227,9 @@ export const geminiService = {
   ): Promise<CompiledInvoiceData> {
     const baseCompiled = localAuditAndCompile(patient, charges, deposit, eventType);
 
-    // If no API key is configured, return the high-fidelity local audit result
-    if (!process.env.GEMINI_API_KEY) {
+    const ai = getGeminiClient();
+    // If no valid API key is configured, return the high-fidelity local audit result immediately
+    if (!ai) {
       return baseCompiled;
     }
 
@@ -273,7 +291,7 @@ Return a strict JSON object with this exact shape:
             responseMimeType: 'application/json',
           },
         }),
-        8000
+        12000
       );
 
       const text = response.text?.trim() || '';
@@ -301,8 +319,8 @@ Return a strict JSON object with this exact shape:
           baseCompiled.flags = Array.from(mergedFlagMap.values());
         }
       }
-    } catch (err) {
-      console.warn('Gemini compileInvoice call error, falling back to local audit:', err);
+    } catch (err: any) {
+      console.warn('Gemini compileInvoice notice, utilizing verified clinical audit baseline:', err?.message || err);
     }
 
     return baseCompiled;
@@ -322,8 +340,7 @@ Return a strict JSON object with this exact shape:
     const { patient, charges, question, language } = params;
     const activeCharges = charges.filter(c => !c.isVoided);
 
-    // Fallback if no API key
-    if (!process.env.GEMINI_API_KEY) {
+    const getFallbackAnswer = () => {
       const qLower = question.toLowerCase();
       let matched = activeCharges.filter(c =>
         c.description.toLowerCase().includes(qLower) ||
@@ -352,6 +369,11 @@ Return a strict JSON object with this exact shape:
         answer: fallbackText,
         groundedInCharges: matched.map(m => m.id),
       };
+    };
+
+    const ai = getGeminiClient();
+    if (!ai) {
+      return getFallbackAnswer();
     }
 
     try {
@@ -396,7 +418,7 @@ Patient Status: ${patient.status}`;
               'You are WardLedger Family Bill Assistant. You are warm, respectful, transparent, and grounded only in the verified hospital ledger. You answer in the specified language.',
           },
         }),
-        8000
+        10000
       );
 
       const answer = response.text?.trim() || 'We have received your inquiry. Please consult the billing supervisor.';
@@ -407,11 +429,8 @@ Patient Status: ${patient.status}`;
           .map(c => c.id),
       };
     } catch (err) {
-      console.warn('Gemini familyChat error:', err);
-      return {
-        answer: `Thank you for your question regarding ${patient.name}'s bill. The charge details are recorded under ${patient.consultant}'s ward team. Please feel free to ask our billing desk for any clarifications.`,
-        groundedInCharges: [],
-      };
+      console.warn('Gemini familyChat notice, using grounded ledger fallback:', err);
+      return getFallbackAnswer();
     }
   },
 
