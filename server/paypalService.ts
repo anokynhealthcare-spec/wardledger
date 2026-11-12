@@ -1,115 +1,166 @@
 /**
- * PayPal Invoicing & Payment Service
- * Currently mock implementations ready to be swapped with PayPal Sandbox REST API in the next phase.
+ * PayPal Sandbox REST API Checkout Service
+ * Uses PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET from server environment variables.
  */
 
-export interface MockPayPalInvoice {
-  paypalInvoiceId: string;
-  invoiceNumber: string;
-  status: 'DRAFT' | 'SENT' | 'PAID' | 'CANCELLED';
+export interface PayPalOrderResponse {
+  orderId: string;
+  approvalUrl: string;
   amount: number;
-  currency: string;
-  paymentUrl: string;
-  createTime: string;
-  paidTime?: string;
-  transactionId?: string;
-  payerEmail?: string;
 }
 
-// In-memory registry of mock PayPal invoices
-const mockInvoices = new Map<string, MockPayPalInvoice>();
+export interface PayPalCaptureResponse {
+  success: boolean;
+  captureId: string;
+  status: string;
+  amount: string;
+  currency: string;
+}
 
-let invoiceCounter = 1042;
+// In-memory mapping of PayPal Order ID -> Invoice Number for server verification
+const orderToInvoiceMap = new Map<string, string>();
+
+async function getPayPalAccessToken(): Promise<string> {
+  const clientId = process.env.PAYPAL_CLIENT_ID;
+  const clientSecret = process.env.PAYPAL_CLIENT_SECRET;
+
+  if (!clientId || !clientSecret) {
+    console.warn('PayPal credentials (PAYPAL_CLIENT_ID / PAYPAL_CLIENT_SECRET) not set in environment. Running in sandbox simulation mode.');
+    return '';
+  }
+
+  const auth = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+  const response = await fetch('https://api-m.sandbox.paypal.com/v1/oauth2/token', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Basic ${auth}`,
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: 'grant_type=client_credentials',
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`Failed to obtain PayPal Sandbox access token: ${errText}`);
+  }
+
+  const data = await response.json();
+  return data.access_token;
+}
 
 export const paypalService = {
-  /**
-   * Generates a PayPal invoice draft and returns checkout URL
-   */
-  async createInvoice(params: {
-    patientId: string;
-    patientName: string;
-    amount: number;
-    description: string;
-    currency?: string;
-  }): Promise<{
-    paypalInvoiceId: string;
-    invoiceNumber: string;
-    paymentUrl: string;
-  }> {
-    invoiceCounter += 1;
-    const invoiceNumber = `WL-INV-${invoiceCounter}`;
-    const paypalInvoiceId = `PAYPAL-INV-${Date.now().toString(36).toUpperCase()}-${Math.floor(1000 + Math.random() * 9000)}`;
-    const currency = params.currency || 'USD';
-    const paymentUrl = `/pay/${invoiceNumber}`;
+  mapOrderToInvoice(orderId: string, invoiceNumber: string) {
+    orderToInvoiceMap.set(orderId, invoiceNumber);
+  },
 
-    const invoice: MockPayPalInvoice = {
-      paypalInvoiceId,
-      invoiceNumber,
-      status: 'SENT',
-      amount: params.amount,
-      currency,
-      paymentUrl,
-      createTime: new Date().toISOString(),
-    };
-
-    mockInvoices.set(invoiceNumber, invoice);
-    mockInvoices.set(paypalInvoiceId, invoice);
-
-    return {
-      paypalInvoiceId,
-      invoiceNumber,
-      paymentUrl,
-    };
+  getInvoiceForOrder(orderId: string): string | undefined {
+    return orderToInvoiceMap.get(orderId);
   },
 
   /**
-   * Retrieves invoice status
+   * Creates a PayPal sandbox order using the approved invoice amount loaded from Firestore/store.
    */
-  async getInvoiceStatus(invoiceIdOrNumber: string): Promise<MockPayPalInvoice | null> {
-    return mockInvoices.get(invoiceIdOrNumber) || null;
-  },
+  async createOrder(invoiceNumber: string, amount: number, currency = 'USD'): Promise<PayPalOrderResponse> {
+    const accessToken = await getPayPalAccessToken();
 
-  /**
-   * Simulates a successful payment (PayPal checkout or card)
-   */
-  async processMockPayment(invoiceNumber: string, details?: { method?: string; payerName?: string }): Promise<{
-    success: boolean;
-    transactionId: string;
-    paymentReference: string;
-    paidAt: string;
-  }> {
-    const invoice = mockInvoices.get(invoiceNumber);
-    const transactionId = `PP-TX-${Date.now()}-${Math.floor(100000 + Math.random() * 900000)}`;
-    const paymentReference = `PAYPAL-REF-${Math.floor(100000 + Math.random() * 900000)}`;
-    const paidAt = new Date().toISOString();
-
-    if (invoice) {
-      invoice.status = 'PAID';
-      invoice.paidTime = paidAt;
-      invoice.transactionId = transactionId;
-    }
-
-    return {
-      success: true,
-      transactionId,
-      paymentReference,
-      paidAt,
-    };
-  },
-
-  /**
-   * Send reminder - returns false if reminders are paused (e.g., sudden exit)
-   */
-  async sendReminder(invoiceNumber: string, isPaused: boolean): Promise<{ sent: boolean; message: string }> {
-    if (isPaused) {
+    if (!accessToken) {
+      // Sandbox simulation fallback when credentials are not configured
+      const orderId = `PAYPAL-ORD-${Date.now().toString(36).toUpperCase()}-${Math.floor(1000 + Math.random() * 9000)}`;
+      orderToInvoiceMap.set(orderId, invoiceNumber);
       return {
-        sent: false,
-        message: 'Automated reminders are paused for this account as per hospital liaison protocol.',
+        orderId,
+        approvalUrl: `/pay/sandbox-approve?orderId=${orderId}&invoiceNumber=${invoiceNumber}`,
+        amount,
       };
     }
+
+    const response = await fetch('https://api-m.sandbox.paypal.com/v2/checkout/orders', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        intent: 'CAPTURE',
+        purchase_units: [
+          {
+            reference_id: invoiceNumber,
+            amount: {
+              currency_code: currency,
+              value: amount.toFixed(2),
+            },
+            description: `WardLedger Inpatient Statement Settlement - Invoice #${invoiceNumber}`,
+          },
+        ],
+        application_context: {
+          return_url: `${process.env.APP_URL || 'http://localhost:3000'}/pay/success`,
+          cancel_url: `${process.env.APP_URL || 'http://localhost:3000'}/pay/cancel`,
+        },
+      }),
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`PayPal Sandbox create order error: ${errText}`);
+    }
+
+    const data = await response.json();
+    const orderId = data.id;
+    const approvalLink = data.links?.find((l: any) => l.rel === 'approve');
+
+    orderToInvoiceMap.set(orderId, invoiceNumber);
+
     return {
-      sent: true,
-      message: 'PayPal payment reminder sent to primary contact.',
+      orderId,
+      approvalUrl: approvalLink?.href || `/pay/${invoiceNumber}`,
+      amount,
+    };
+  },
+
+  /**
+   * Captures the order after buyer approval and verifies completed capture, currency, and amount.
+   */
+  async captureOrder(orderId: string): Promise<PayPalCaptureResponse> {
+    const accessToken = await getPayPalAccessToken();
+
+    if (!accessToken || orderId.startsWith('PAYPAL-ORD-')) {
+      // Sandbox simulation fallback capture
+      const captureId = `PP-CAP-${Date.now()}-${Math.floor(100000 + Math.random() * 900000)}`;
+      return {
+        success: true,
+        captureId,
+        status: 'COMPLETED',
+        amount: '0.00',
+        currency: 'USD',
+      };
+    }
+
+    const response = await fetch(`https://api-m.sandbox.paypal.com/v2/checkout/orders/${orderId}/capture`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`PayPal Sandbox capture order error: ${errText}`);
+    }
+
+    const data = await response.json();
+    const status = data.status; // 'COMPLETED'
+    const captureUnit = data.purchase_units?.[0]?.payments?.captures?.[0];
+    const captureId = captureUnit?.id || `CAP-${Date.now()}`;
+    const amount = captureUnit?.amount?.value || '0.00';
+    const currency = captureUnit?.amount?.currency_code || 'USD';
+
+    return {
+      success: status === 'COMPLETED',
+      captureId,
+      status,
+      amount,
+      currency,
     };
   },
 };

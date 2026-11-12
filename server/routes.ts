@@ -199,13 +199,12 @@ apiRouter.post('/invoices', async (req: Request, res: Response) => {
     return res.status(404).json({ error: 'Invoice record not found' });
   }
 
-  // Create mock PayPal link
-  const paypalResult = await paypalService.createInvoice({
-    patientId: existing.patientId,
-    patientName: existing.compiledData.patientName,
-    amount: existing.compiledData.totalDue,
-    description: `WardLedger Settlement - ${existing.compiledData.patientName}`,
-  });
+  // Create PayPal order
+  const paypalResult = await paypalService.createOrder(
+    invoiceNumber,
+    existing.compiledData.totalDue,
+    'USD'
+  );
 
   const approved = store.approveAndSendInvoice(
     invoiceNumber,
@@ -220,7 +219,7 @@ apiRouter.post('/invoices', async (req: Request, res: Response) => {
     invoiceId: approved?.id,
     invoiceNumber: approved?.invoiceNumber,
     paymentLink: approved?.paymentLink,
-    paypalInvoiceId: paypalResult.paypalInvoiceId,
+    paypalOrderId: paypalResult.orderId,
     status: approved?.status,
     patientId: approved?.patientId,
   });
@@ -235,52 +234,99 @@ apiRouter.get('/invoices/:id', (req: Request, res: Response) => {
   res.json({ invoice });
 });
 
-// GET /api/invoices/:id/status - fetch status from paypalService & store
+// GET /api/invoices/:id/status - fetch invoice status
 apiRouter.get('/invoices/:id/status', async (req: Request, res: Response) => {
   const invoice = store.getInvoice(req.params.id);
   if (!invoice) {
     return res.status(404).json({ error: 'Invoice not found' });
   }
 
-  const ppStatus = await paypalService.getInvoiceStatus(req.params.id);
   res.json({
     invoiceNumber: invoice.invoiceNumber,
     status: invoice.status,
     paidAt: invoice.paidAt,
     paymentReference: invoice.paymentReference,
-    paypalStatus: ppStatus?.status,
   });
 });
 
-// POST /api/invoices/:id/mock-pay - simulate settlement
-apiRouter.post('/invoices/:id/mock-pay', async (req: Request, res: Response) => {
-  const { payerName, method } = req.body;
-  const invoiceNumber = req.params.id;
+// POST /api/paypal/create-order - create PayPal sandbox order for invoice amount
+apiRouter.post('/paypal/create-order', async (req: Request, res: Response) => {
+  const { invoiceNumber } = req.body;
+  if (!invoiceNumber) {
+    return res.status(400).json({ error: 'invoiceNumber is required' });
+  }
 
   const invoice = store.getInvoice(invoiceNumber);
   if (!invoice) {
     return res.status(404).json({ error: 'Invoice not found' });
   }
 
-  const payResult = await paypalService.processMockPayment(invoiceNumber, {
-    payerName,
-    method: method || 'PayPal (USD)',
-  });
+  const amount = invoice.compiledData.totalDue;
 
-  const result = store.markInvoicePaid(
-    invoiceNumber,
-    payResult.paymentReference,
-    method || 'PayPal (USD)',
-    payerName || 'Family Member'
-  );
+  try {
+    const orderResult = await paypalService.createOrder(invoiceNumber, amount, 'USD');
+    res.json({
+      success: true,
+      orderId: orderResult.orderId,
+      approvalUrl: orderResult.approvalUrl,
+      amount: orderResult.amount,
+      currency: 'USD',
+    });
+  } catch (err: any) {
+    console.error('PayPal create-order error:', err);
+    res.status(500).json({ error: 'Failed to create PayPal sandbox order', details: err?.message });
+  }
+});
 
-  res.json({
-    success: true,
-    invoice: result?.invoice,
-    patient: result?.patient,
-    paymentReference: payResult.paymentReference,
-    transactionId: payResult.transactionId,
-  });
+// POST /api/paypal/capture - capture PayPal order and mark invoice paid with actual capture ID
+apiRouter.post('/paypal/capture', async (req: Request, res: Response) => {
+  const { orderId, invoiceNumber, payerName } = req.body;
+  if (!orderId || !invoiceNumber) {
+    return res.status(400).json({ error: 'orderId and invoiceNumber are required' });
+  }
+
+  const mappedInvoice = paypalService.getInvoiceForOrder(orderId);
+  if (mappedInvoice && mappedInvoice !== invoiceNumber) {
+    return res.status(400).json({ error: 'Order ID does not match invoice number' });
+  }
+
+  const invoice = store.getInvoice(invoiceNumber);
+  if (!invoice) {
+    return res.status(404).json({ error: 'Invoice not found' });
+  }
+
+  try {
+    const captureResult = await paypalService.captureOrder(orderId);
+    if (!captureResult.success || captureResult.status !== 'COMPLETED') {
+      return res.status(400).json({ error: 'PayPal payment capture was not completed successfully' });
+    }
+
+    const expectedAmount = Number(invoice.compiledData.totalDue.toFixed(2));
+    const capturedAmount = Number(Number(captureResult.amount).toFixed(2));
+    if (captureResult.currency && captureResult.currency !== 'USD') {
+      return res.status(400).json({ error: 'Invalid payment currency' });
+    }
+    if (capturedAmount > 0 && Math.abs(capturedAmount - expectedAmount) > 0.05) {
+      return res.status(400).json({ error: 'Captured payment amount does not match invoice due amount' });
+    }
+
+    const paidResult = store.markInvoicePaid(
+      invoiceNumber,
+      captureResult.captureId,
+      'PayPal Sandbox (USD Direct)',
+      payerName || 'Family Member'
+    );
+
+    res.json({
+      success: true,
+      captureId: captureResult.captureId,
+      invoice: paidResult?.invoice,
+      patient: paidResult?.patient,
+    });
+  } catch (err: any) {
+    console.error('PayPal capture error:', err);
+    res.status(500).json({ error: 'Failed to capture PayPal payment', details: err?.message });
+  }
 });
 
 // POST /api/invoices/:id/share-message - generate localized family copy

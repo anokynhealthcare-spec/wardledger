@@ -38,10 +38,42 @@ export const PayModal: React.FC<PayModalProps> = ({
     e.preventDefault();
     setIsProcessing(true);
     try {
-      await onPaymentSuccess(invoiceNum, payerName);
-      onClose();
+      // 1. Create PayPal Sandbox Order
+      const createRes = await fetch('/api/paypal/create-order', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ invoiceNumber: invoiceNum }),
+      });
+      if (!createRes.ok) {
+        throw new Error('Failed to create PayPal sandbox order');
+      }
+      const orderData = await createRes.json();
+      const orderId = orderData.orderId;
+
+      // 2. Capture PayPal Sandbox Order
+      const captureRes = await fetch('/api/paypal/capture', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          orderId,
+          invoiceNumber: invoiceNum,
+          payerName,
+        }),
+      });
+      if (!captureRes.ok) {
+        throw new Error('PayPal payment capture failed');
+      }
+      const captureData = await captureRes.json();
+
+      if (captureData.success) {
+        await onPaymentSuccess(invoiceNum, payerName);
+        onClose();
+      } else {
+        throw new Error('Payment was not completed');
+      }
     } catch (err) {
-      console.error('Payment error', err);
+      console.error('PayPal Sandbox payment error', err);
+      alert('Payment processing failed. Please check server logs or PayPal sandbox credentials.');
     } finally {
       setIsProcessing(false);
     }
@@ -149,7 +181,7 @@ export const PayModal: React.FC<PayModalProps> = ({
 
             <div className="flex items-center justify-center gap-1.5 text-[11px] text-slate-400">
               <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
-              <span>Mock Sandbox Simulation • 256-bit encryption</span>
+              <span>PayPal Sandbox REST API • 256-bit encryption</span>
             </div>
           </form>
         </div>
