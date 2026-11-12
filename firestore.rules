@@ -2,7 +2,6 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Helper functions
     function isValidId(id) {
       return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
@@ -22,7 +21,8 @@ service cloud.firestore {
 
     // Patient collection
     match /patients/{patientId} {
-      allow read: if isValidId(patientId);
+      allow get: if isValidId(patientId);
+      allow list: if true;
       allow create: if isValidId(patientId)
         && incoming().name is string && incoming().name.size() <= 100
         && incoming().mrn is string && incoming().mrn.size() <= 30
@@ -36,7 +36,8 @@ service cloud.firestore {
 
       // Subcollection: charges
       match /charges/{chargeId} {
-        allow read: if isValidId(patientId) && isValidId(chargeId);
+        allow get: if isValidId(patientId) && isValidId(chargeId);
+        allow list: if isValidId(patientId);
         allow create: if isValidId(patientId) && isValidId(chargeId)
           && incoming().description is string && incoming().description.size() <= 200
           && incoming().quantity is number && incoming().quantity > 0
@@ -48,7 +49,8 @@ service cloud.firestore {
 
     // Invoices collection
     match /invoices/{invoiceId} {
-      allow read: if isValidId(invoiceId);
+      allow get: if isValidId(invoiceId);
+      allow list: if true;
       allow create: if isValidId(invoiceId)
         && incoming().invoiceNumber is string && incoming().invoiceNumber.size() <= 50
         && incoming().patientId is string;
@@ -58,7 +60,8 @@ service cloud.firestore {
 
     // Activity Log collection
     match /activityLogs/{logId} {
-      allow read: if isValidId(logId);
+      allow get: if isValidId(logId);
+      allow list: if true;
       allow create: if isValidId(logId)
         && incoming().action is string
         && incoming().details is string && incoming().details.size() <= 500;
@@ -68,11 +71,17 @@ service cloud.firestore {
 
     // Price List collection
     match /priceList/{priceId} {
-      allow read: if isValidId(priceId);
+      allow get: if isValidId(priceId);
+      allow list: if true;
       allow create, update: if isValidId(priceId)
         && incoming().name is string && incoming().name.size() <= 150
         && incoming().unitPrice is number;
       allow delete: if false;
+    }
+
+    // Test connection doc
+    match /test/connection {
+      allow read, write: if true;
     }
   }
 }
